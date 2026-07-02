@@ -1,0 +1,23 @@
+THIRD-PARTY ATTRIBUTIONS
+
+
+This package contains adapted research code and uses third-party Python
+libraries.
+
+1. CL4KT
+Source: https://github.com/UpstageAI/cl4kt
+Paper: "Contrastive Learning for Knowledge Tracing" (The Web Conference 2022)
+
+The CL4KT backbone, training structure, data loaders, and sequence augmentation
+logic were adapted from the official CL4KT implementation.
+
+Relevant files in this package include:
+- models/cl4kt.py
+- data_loaders.py
+- train.py
+- utils/augment_seq.py
+
+2. YACS and iopath
+YACS: https://github.com/rbgirshick/yacs
+iopath: https://github.com/facebookresearch/iopath
+

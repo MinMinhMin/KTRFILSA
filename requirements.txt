@@ -1,0 +1,14 @@
+numpy>=1.22
+pandas>=1.4
+torch>=1.10
+accelerate>=0.6
+PyYAML>=6.0
+yacs>=0.1.8
+iopath>=0.1.9
+scikit-learn>=1.0
+scipy>=1.8
+matplotlib>=3.5
+seaborn>=0.11
+joblib>=1.1
+tqdm>=4.62
+Pillow>=9.0
