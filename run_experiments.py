@@ -179,7 +179,7 @@ class Pipeline:
             return
 
         printable = " ".join(str(part) for part in command)
-        print(f"\n[{stage}]\n{printable}")
+        print(f"\n[{stage}]\n{printable}", flush=True)
         if self.args.dry_run:
             return
 
@@ -200,7 +200,7 @@ class Pipeline:
             )
             assert process.stdout is not None
             for line in process.stdout:
-                print(line, end="")
+                print(line, end="", flush=True)
                 log_file.write(line)
                 log_file.flush()
             return_code = process.wait()

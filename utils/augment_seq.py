@@ -131,35 +131,35 @@ def augment_kt_seqs(
     true_seq_len = np.sum(np.asarray(q_seq) != 0)
     if permute_prob > 0:
         reorder_seq_len = math.floor(permute_prob * true_seq_len)
-        start_idx = (np.asarray(q_seq) != 0).argmax()
-        while True:
-            start_pos = rng.randint(start_idx, seq_len - reorder_seq_len)
-            if start_pos + reorder_seq_len < seq_len:
-                break
+        if reorder_seq_len > 0:
+            start_idx = (np.asarray(q_seq) != 0).argmax()
+            start_pos = _sample_subsequence_start(
+                rng, start_idx, reorder_seq_len, seq_len
+            )
 
-        # Permute one contiguous subsequence.
-        perm = np.random.permutation(reorder_seq_len)
-        masked_q_seq = (
-            masked_q_seq[:start_pos]
-            + np.asarray(masked_q_seq[start_pos : start_pos + reorder_seq_len])[
-                perm
-            ].tolist()
-            + masked_q_seq[start_pos + reorder_seq_len :]
-        )
-        masked_s_seq = (
-            masked_s_seq[:start_pos]
-            + np.asarray(masked_s_seq[start_pos : start_pos + reorder_seq_len])[
-                perm
-            ].tolist()
-            + masked_s_seq[start_pos + reorder_seq_len :]
-        )
-        masked_r_seq = (
-            masked_r_seq[:start_pos]
-            + np.asarray(masked_r_seq[start_pos : start_pos + reorder_seq_len])[
-                perm
-            ].tolist()
-            + masked_r_seq[start_pos + reorder_seq_len :]
-        )
+            # Permute one contiguous subsequence.
+            perm = np.random.permutation(reorder_seq_len)
+            masked_q_seq = (
+                masked_q_seq[:start_pos]
+                + np.asarray(masked_q_seq[start_pos : start_pos + reorder_seq_len])[
+                    perm
+                ].tolist()
+                + masked_q_seq[start_pos + reorder_seq_len :]
+            )
+            masked_s_seq = (
+                masked_s_seq[:start_pos]
+                + np.asarray(masked_s_seq[start_pos : start_pos + reorder_seq_len])[
+                    perm
+                ].tolist()
+                + masked_s_seq[start_pos + reorder_seq_len :]
+            )
+            masked_r_seq = (
+                masked_r_seq[:start_pos]
+                + np.asarray(masked_r_seq[start_pos : start_pos + reorder_seq_len])[
+                    perm
+                ].tolist()
+                + masked_r_seq[start_pos + reorder_seq_len :]
+            )
 
     # Crop one contiguous subsequence.
     if 0 < crop_prob < 1:
@@ -167,10 +167,9 @@ def augment_kt_seqs(
         if crop_seq_len == 0:
             crop_seq_len = 1
         start_idx = (np.asarray(q_seq) != 0).argmax()
-        while True:
-            start_pos = rng.randint(start_idx, seq_len - crop_seq_len)
-            if start_pos + crop_seq_len < seq_len:
-                break
+        start_pos = _sample_subsequence_start(
+            rng, start_idx, crop_seq_len, seq_len
+        )
 
         masked_q_seq = masked_q_seq[start_pos : start_pos + crop_seq_len]
         masked_s_seq = masked_s_seq[start_pos : start_pos + crop_seq_len]
@@ -184,6 +183,14 @@ def augment_kt_seqs(
     masked_r_seq = [-1] * pad_len + masked_r_seq
 
     return masked_q_seq, masked_s_seq, masked_r_seq, negative_r_seq, attention_mask
+
+
+def _sample_subsequence_start(rng, start_idx, subsequence_len, seq_len):
+    """Sample a valid inclusive start without retrying an impossible endpoint."""
+    last_start = seq_len - subsequence_len
+    if last_start < start_idx:
+        return start_idx
+    return rng.randint(start_idx, last_start)
 
 
 def preprocess_qr(questions, responses, seq_len, pad_val=-1):

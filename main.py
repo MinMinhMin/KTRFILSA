@@ -27,6 +27,18 @@ def main(config, gpu=None, ddp=False):
     accelerator = Accelerator()
     device = accelerator.device
     distributed = accelerator.num_processes > 1
+    process_index = getattr(
+        accelerator,
+        "process_index",
+        getattr(accelerator, "local_process_index", 0),
+    )
+    print(
+        "[runtime] "
+        f"rank={process_index}/{accelerator.num_processes} "
+        f"device={device} distributed={distributed} "
+        f"cuda_visible_devices={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}",
+        flush=True,
+    )
     if ddp and not distributed:
         raise RuntimeError(
             "--ddp requires a torchrun/accelerate distributed launch; "
@@ -75,7 +87,7 @@ def main(config, gpu=None, ddp=False):
 
     df = pd.read_csv(df_path, sep="\t")
 
-    print("skill_min", df["skill_id"].min())
+    print("skill_min", df["skill_id"].min(), flush=True)
     users = df["user_id"].unique()
     df["skill_id"] += 1  # zero for padding
     df["item_id"] += 1  # zero for padding
@@ -130,38 +142,32 @@ def main(config, gpu=None, ddp=False):
         print("test_ids", len(test_users))
 
         if "cl" in model_name:  # contrastive learning
-            train_loader = accelerator.prepare(
-                DataLoader(
-                    SimCLRDatasetWrapper(
-                        train_dataset,
-                        seq_len,
-                        mask_prob,
-                        crop_prob,
-                        permute_prob,
-                        replace_prob,
-                        negative_prob,
-                        eval_mode=False,
-                    ),
-                    batch_size=batch_size,
-                )
+            train_loader = DataLoader(
+                SimCLRDatasetWrapper(
+                    train_dataset,
+                    seq_len,
+                    mask_prob,
+                    crop_prob,
+                    permute_prob,
+                    replace_prob,
+                    negative_prob,
+                    eval_mode=False,
+                ),
+                batch_size=batch_size,
             )
 
-            valid_loader = accelerator.prepare(
-                DataLoader(
-                    SimCLRDatasetWrapper(
-                        valid_dataset, seq_len, 0, 0, 0, 0, 0, eval_mode=True
-                    ),
-                    batch_size=eval_batch_size,
-                )
+            valid_loader = DataLoader(
+                SimCLRDatasetWrapper(
+                    valid_dataset, seq_len, 0, 0, 0, 0, 0, eval_mode=True
+                ),
+                batch_size=eval_batch_size,
             )
 
-            test_loader = accelerator.prepare(
-                DataLoader(
-                    SimCLRDatasetWrapper(
-                        test_dataset, seq_len, 0, 0, 0, 0, 0, eval_mode=True
-                    ),
-                    batch_size=eval_batch_size,
-                )
+            test_loader = DataLoader(
+                SimCLRDatasetWrapper(
+                    test_dataset, seq_len, 0, 0, 0, 0, 0, eval_mode=True
+                ),
+                batch_size=eval_batch_size,
             )
         else:
             raise ValueError("This paper package supports only the CL4KT backbone")
@@ -177,7 +183,9 @@ def main(config, gpu=None, ddp=False):
         elif optimizer == "adam":
             opt = Adam(model.parameters(), learning_rate, weight_decay=model_config.l2)
 
-        model, opt = accelerator.prepare(model, opt)
+        model, opt, train_loader, valid_loader, test_loader = accelerator.prepare(
+            model, opt, train_loader, valid_loader, test_loader
+        )
 
         test_auc, test_acc, test_rmse = model_train(
             fold,

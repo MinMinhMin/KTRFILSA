@@ -93,7 +93,7 @@ def main():
             command.append("--force")
         if args.dry_run:
             command.append("--dry-run")
-        print(f"\n=== {dataset} ===")
+        print(f"\n=== {dataset} ===", flush=True)
         subprocess.run(command, cwd=root, check=True)
 
 

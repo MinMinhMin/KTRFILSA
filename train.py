@@ -8,6 +8,46 @@ from datetime import datetime, timedelta
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score, accuracy_score, mean_squared_error
 
+
+def _make_training_logger(log_path, data_name, accelerator):
+    """Create a flushed stdout/file logger for diagnosing distributed stalls."""
+    try:
+        log_every_batch = int(os.environ.get("KTRFILSA_LOG_EVERY_BATCH", "0"))
+    except ValueError:
+        log_every_batch = 0
+
+    if log_every_batch <= 0:
+        return lambda event, **fields: None, log_every_batch
+
+    rank = getattr(
+        accelerator,
+        "process_index",
+        getattr(accelerator, "local_process_index", 0),
+    )
+    world_size = getattr(accelerator, "num_processes", 1)
+    debug_dir = os.path.join(log_path, data_name)
+    os.makedirs(debug_dir, exist_ok=True)
+    debug_file = open(
+        os.path.join(debug_dir, f"debug_rank_{rank}.log"),
+        "a",
+        encoding="utf-8",
+        buffering=1,
+    )
+
+    def log(event, **fields):
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        details = " ".join(f"{key}={value}" for key, value in fields.items())
+        line = (
+            f"[train-debug] time={timestamp} rank={rank}/{world_size} "
+            f"event={event} {details}"
+        ).rstrip()
+        print(line, flush=True)
+        debug_file.write(line + "\n")
+        debug_file.flush()
+
+    return log, log_every_batch
+
+
 def export_model_state_dict(model, accelerator=None):
     if accelerator is not None:
         model = accelerator.unwrap_model(model)
@@ -54,19 +94,73 @@ def model_train(
 
     now = (datetime.now() + timedelta(hours=9)).strftime("%Y%m%d-%H%M%S")  # KST time
 
+    debug_log, log_every_batch = _make_training_logger(
+        log_path, data_name, accelerator
+    )
+    debug_log(
+        "train_start",
+        fold=fold,
+        epochs=num_epochs,
+        train_batches=len(train_loader),
+        valid_batches=len(valid_loader),
+        test_batches=len(test_loader),
+        device=str(accelerator.device),
+    )
+
     token_cnts = 0
     label_sums = 0
     for i in range(1, num_epochs + 1):
-        for batch in tqdm(train_loader):
+        progress = tqdm(
+            total=len(train_loader),
+            disable=not accelerator.is_main_process,
+            desc=f"train epoch {i}",
+        )
+        train_iterator = iter(train_loader)
+        for batch_idx in range(len(train_loader)):
+            should_log_batch = (
+                log_every_batch > 0
+                and (
+                    batch_idx % log_every_batch == 0
+                    or batch_idx == len(train_loader) - 1
+                )
+            )
+            if should_log_batch:
+                debug_log(
+                    "batch_next_start",
+                    epoch=i,
+                    batch=batch_idx + 1,
+                    total_batches=len(train_loader),
+                )
+            batch = next(train_iterator)
+            if should_log_batch:
+                debug_log("batch_ready", epoch=i, batch=batch_idx + 1)
+
             opt.zero_grad()
 
             model.train()
+            if should_log_batch:
+                debug_log("forward_start", epoch=i, batch=batch_idx + 1)
             out_dict = model(batch)
+            if should_log_batch:
+                debug_log("forward_done", epoch=i, batch=batch_idx + 1)
 
             base_model = accelerator.unwrap_model(model)
+            if should_log_batch:
+                debug_log("loss_start", epoch=i, batch=batch_idx + 1)
             loss, token_cnt, label_sum = base_model.loss(batch, out_dict)
+            if should_log_batch:
+                debug_log(
+                    "loss_done",
+                    epoch=i,
+                    batch=batch_idx + 1,
+                    loss=f"{loss.item():.6f}",
+                )
 
+            if should_log_batch:
+                debug_log("backward_start", epoch=i, batch=batch_idx + 1)
             accelerator.backward(loss)
+            if should_log_batch:
+                debug_log("backward_done", epoch=i, batch=batch_idx + 1)
 
             token_cnts += token_cnt
             label_sums += label_sum
@@ -76,15 +170,24 @@ def model_train(
                     model.parameters(), max_norm=train_config["max_grad_norm"]
                 )
 
+            if should_log_batch:
+                debug_log("optimizer_start", epoch=i, batch=batch_idx + 1)
             opt.step()
             train_losses.append(loss.item())
+            progress.update(1)
+            if should_log_batch:
+                debug_log("batch_done", epoch=i, batch=batch_idx + 1)
 
-        print("token_cnts", token_cnts, "label_sums", label_sums)
+        progress.close()
+        debug_log("train_epoch_done", epoch=i)
+
+        print("token_cnts", token_cnts, "label_sums", label_sums, flush=True)
 
         total_preds = []
         total_trues = []
 
         with torch.no_grad():
+            debug_log("valid_start", epoch=i)
             for batch in valid_loader:
                 model.eval()
 
@@ -98,9 +201,13 @@ def model_train(
                 total_preds.append(pred)
                 total_trues.append(true)
 
+            debug_log("valid_batches_done", epoch=i)
+
+            debug_log("valid_gather_start", epoch=i)
             total_preds, total_trues = gather_metric_tensors(
                 accelerator, torch.cat(total_preds), torch.cat(total_trues)
             )
+            debug_log("valid_gather_done", epoch=i)
             total_preds = total_preds.squeeze(-1).detach().cpu().numpy()
             total_trues = total_trues.squeeze(-1).detach().cpu().numpy()
 
@@ -124,7 +231,9 @@ def model_train(
                     {"epoch": i, "model_state_dict": export_model_state_dict(model, accelerator)},
                     os.path.join(checkpoint_root, model_name, data_name, "params_{}".format(str(best_epoch))),
                 )
+        debug_log("epoch_barrier_start", epoch=i)
         accelerator.wait_for_everyone()
+        debug_log("epoch_barrier_done", epoch=i)
         if i - best_epoch > 10:
             break
 
@@ -136,6 +245,7 @@ def model_train(
 
         # evaluation on test dataset
         with torch.no_grad():
+            debug_log("test_start", epoch=i)
             for batch in test_loader:
 
                 model.eval()
@@ -151,9 +261,13 @@ def model_train(
                 total_preds.append(pred)
                 total_trues.append(true)
 
+            debug_log("test_batches_done", epoch=i)
+
+            debug_log("test_gather_start", epoch=i)
             total_preds, total_trues = gather_metric_tensors(
                 accelerator, torch.cat(total_preds), torch.cat(total_trues)
             )
+            debug_log("test_gather_done", epoch=i)
             total_preds = total_preds.squeeze(-1).detach().cpu().numpy()
             total_trues = total_trues.squeeze(-1).detach().cpu().numpy()
 
@@ -163,7 +277,8 @@ def model_train(
             print(
                 "Fold {}:\t Epoch {}\t\tTRAIN LOSS: {:.5f}\tVALID AUC: {:.5f}\tTEST AUC: {:.5f}".format(
                     fold, i, train_loss, valid_auc, test_auc
-                )
+                ),
+                flush=True,
             )
     accelerator.wait_for_everyone()
     checkpoint = torch.load(
@@ -206,7 +321,8 @@ def model_train(
         print(
             "Best Model\tTEST AUC: {:.5f}\tTEST ACC: {:5f}\tTEST RMSE: {:5f}".format(
                 auc, acc, rmse
-            )
+            ),
+            flush=True,
         )
 
     logs_df = pd.concat(
