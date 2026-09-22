@@ -51,7 +51,10 @@ Each processed dataset directory must contain `preprocessed_df.csv`. Dataset pre
 Run all three datasets:
 
 ```bash
-python run_all_datasets.py --output-root paper_results
+python run_all_datasets.py \
+  --output-root paper_results \
+  --k-values 3,4,5,6 \
+  --selected-k 3
 ```
 
 Run one dataset:
@@ -59,8 +62,17 @@ Run one dataset:
 ```bash
 python run_experiments.py \
   --dataset XES3G5M \
-  --output-dir paper_results/XES3G5M
+  --output-dir paper_results/XES3G5M \
+  --k-values 3,4,5,6 \
+  --selected-k 3
 ```
+
+`--k-values` controls the post-hoc KMeans sensitivity experiment. The default
+candidate values are `3,4,5,6`. `--selected-k 3` keeps K=3 as the canonical
+state granularity consumed by the paper's trajectory and order-shuffle
+experiments. The pipeline also reports `metric_best_k`, the K ranked by
+internal geometry, but that value never silently replaces the explicit
+selected K.
 
 The default model seeds are `12405`, `12406`, and `12407`. At most three model seeds are used.
 
@@ -75,5 +87,44 @@ The experiment runner is resumable. Existing completed stages are reused unless 
 ## Outputs
 
 Each dataset produces separate directories for representation quality, stability, pedagogical analysis, and trajectory analysis. Outputs include CSV tables, trained checkpoints, cluster models, logs, and figures.
+
+The K-sensitivity stage is stored under:
+
+```text
+experiment_1/
+├── k_sensitivity.csv                         # legacy metric-table alias
+├── k_sensitivity/
+│   ├── cluster_metrics.csv                   # Silhouette, Davies–Bouldin, Calinski–Harabasz
+│   ├── interpretability_summary.csv          # per-K/per-cluster profiles
+│   ├── interpretability_feature_effects.csv  # internal feature separation and p-values
+│   ├── interpretability_sensitivity.md       # camera-ready interpretation
+│   └── k_{3,4,5,6}/                          # detailed per-K profiles/reports
+└── runs/.../latent_clustering/.../
+    ├── kmeans_model_k{K}.pkl
+    ├── cluster_assignments_k{K}.csv
+    └── representatives_k{K}.csv
+```
+
+The Markdown report treats states as descriptive and correctness-correlated,
+not diagnostic cognitive labels. It also records that this validation is
+internal to the representation/interaction data and does not establish a link
+to later course performance, dropout, or independent instructor judgment.
+
+## Kaggle camera-ready workflow
+
+The notebook `notebooks/camera_ready_kaggle_hf.ipynb` is ready for Kaggle.
+Set `REPO_OWNER`, `REPO_NAME`, and `REPO_BRANCH` in its first code cell. It
+reads the GitHub token from the Kaggle secret `GITHUB_TOKEN`, maps:
+
+```text
+/kaggle/input/datasets/minhvu111/dataset-kl/ASSISTMENT2009 -> dataset/ASSISTMENT2009
+/kaggle/input/datasets/minhvu111/dataset-kl/ASSISTMENT2017 -> dataset/ASSISTMENT2017
+/kaggle/input/datasets/minhvu111/dataset-kl/XES3G5M0       -> dataset/XES3G5M
+```
+
+It runs the full K=3,4,5,6 pipeline, packages the complete output and report
+files, then reads `HF_TOKEN` from Kaggle Secrets and uploads the zip to
+`MinMinMinMin/KL` with `HF_REPO_TYPE = "model"`. No token is stored in the
+repository or the uploaded archive.
 
 Third-party code and attributions are listed in `THIRD_PARTY.txt`.

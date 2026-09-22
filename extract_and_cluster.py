@@ -193,17 +193,33 @@ def evaluate_kmeans(
     output_dir,
     k_values,
     seed,
+    selected_k=3,
     scaler=None,
     metric_sample=5000,
 ):
+    k_values = [int(k) for k in k_values]
+    if not k_values:
+        raise ValueError("At least one k value is required")
+    if any(k <= 0 for k in k_values):
+        raise ValueError("All k values must be positive")
+    if len(set(k_values)) != len(k_values):
+        raise ValueError("k_values contains duplicate values")
+    if selected_k not in k_values:
+        raise ValueError(
+            f"selected_k={selected_k} must be one of k_values={k_values}"
+        )
+
     metrics = []
     models = {}
     for k in k_values:
         if len(features_for_clustering) <= k:
-            continue
+            raise ValueError(
+                f"Not enough feature rows ({len(features_for_clustering)}) for k={k}"
+            )
         kmeans = KMeans(n_clusters=k, random_state=seed, n_init=10)
         labels = kmeans.fit_predict(features_for_clustering)
         metric_features, metric_labels = sample_for_metric(features_for_clustering, labels, seed, metric_sample)
+        counts = np.bincount(labels, minlength=k)
         metrics.append(
             {
                 "k": k,
@@ -213,10 +229,7 @@ def evaluate_kmeans(
                 "calinski_harabasz_score": calinski_harabasz_score(
                     metric_features, metric_labels
                 ),
-                "cluster_size_min_max_ratio": float(
-                    np.bincount(labels, minlength=k).min()
-                    / np.bincount(labels, minlength=k).max()
-                ),
+                "cluster_size_min_max_ratio": float(counts.min() / counts.max()),
             }
         )
         models[k] = (kmeans, labels)
@@ -225,25 +238,49 @@ def evaluate_kmeans(
     if metrics_df.empty:
         raise ValueError("Not enough feature rows to evaluate the requested k values")
 
-    metrics_df.to_csv(output_dir / "cluster_metrics.csv", index=False)
-    best_k = int(metrics_df.sort_values(
+    metric_best_k = int(metrics_df.sort_values(
         ["silhouette_score", "davies_bouldin_index"], ascending=[False, True]
     ).iloc[0]["k"])
-    best_model, labels = models[best_k]
+    metrics_df["selected_k"] = metrics_df["k"].eq(selected_k)
+    metrics_df["metric_best_k"] = metrics_df["k"].eq(metric_best_k)
+    metrics_df["selected_k_value"] = int(selected_k)
+    metrics_df["metric_best_k_value"] = int(metric_best_k)
+    metrics_df.to_csv(output_dir / "cluster_metrics.csv", index=False)
 
+    for k, (model, labels) in models.items():
+        labeled = metadata.copy()
+        labeled["cluster"] = labels
+        labeled.to_csv(output_dir / f"cluster_assignments_k{k}.csv", index=False)
+
+        representatives = []
+        for cluster_id, center in enumerate(model.cluster_centers_):
+            cluster_indices = np.where(labels == cluster_id)[0]
+            dists = np.linalg.norm(
+                features_for_clustering[cluster_indices] - center, axis=1
+            )
+            order = np.argsort(dists)[:5]
+            reps = labeled.iloc[cluster_indices[order]].copy()
+            reps["distance_to_centroid"] = dists[order]
+            representatives.append(reps)
+        pd.concat(representatives).to_csv(
+            output_dir / f"representatives_k{k}.csv", index=False
+        )
+        joblib.dump(
+            {
+                "kmeans": model,
+                "scaler": scaler,
+                "best_k": int(k),
+                "selected_k": int(selected_k),
+                "metric_best_k": int(metric_best_k),
+                "cluster_unit": "timestep",
+                "feature_space": "standardized" if scaler is not None else "raw",
+            },
+            output_dir / f"kmeans_model_k{k}.pkl",
+        )
+
+    best_model, labels = models[selected_k]
     labeled = metadata.copy()
     labeled["cluster"] = labels
-    labeled.to_csv(output_dir / f"cluster_assignments_k{best_k}.csv", index=False)
-
-    representatives = []
-    for cluster_id, center in enumerate(best_model.cluster_centers_):
-        cluster_indices = np.where(labels == cluster_id)[0]
-        dists = np.linalg.norm(features_for_clustering[cluster_indices] - center, axis=1)
-        order = np.argsort(dists)[:5]
-        reps = labeled.iloc[cluster_indices[order]].copy()
-        reps["distance_to_centroid"] = dists[order]
-        representatives.append(reps)
-    pd.concat(representatives).to_csv(output_dir / f"representatives_k{best_k}.csv", index=False)
 
     np.savez_compressed(
         output_dir / "latent_features.npz",
@@ -253,19 +290,23 @@ def evaluate_kmeans(
         step_indices=metadata["step_index"].to_numpy(),
         feature_index=metadata["feature_index"].to_numpy(),
         labels=labels,
-        best_k=np.array(best_k),
+        best_k=np.array(selected_k),
+        selected_k=np.array(selected_k),
+        metric_best_k=np.array(metric_best_k),
     )
     joblib.dump(
         {
             "kmeans": best_model,
             "scaler": scaler,
-            "best_k": best_k,
+            "best_k": int(selected_k),
+            "selected_k": int(selected_k),
+            "metric_best_k": int(metric_best_k),
             "cluster_unit": "timestep",
             "feature_space": "standardized" if scaler is not None else "raw",
         },
         output_dir / "kmeans_model.pkl",
     )
-    return best_k, labels, metrics_df
+    return selected_k, labels, metrics_df
 
 
 def visualize_tsne(features_for_embedding, labels, metadata, output_dir, seed, sample_size):
@@ -319,7 +360,21 @@ def visualize_tsne(features_for_embedding, labels, metadata, output_dir, seed, s
 
 
 def parse_k_values(value):
-    return [int(item.strip()) for item in value.split(",") if item.strip()]
+    values = [int(item.strip()) for item in value.split(",") if item.strip()]
+    if not values:
+        raise ValueError("k_values must contain at least one integer")
+    if any(value <= 0 for value in values):
+        raise ValueError("All k values must be positive")
+    if len(set(values)) != len(values):
+        raise ValueError("k_values contains duplicate values")
+    return values
+
+
+def validate_selected_k(selected_k, k_values):
+    if selected_k not in k_values:
+        raise ValueError(
+            f"selected_k={selected_k} must be one of k_values={k_values}"
+        )
 
 
 def main():
@@ -330,6 +385,7 @@ def main():
     parser.add_argument("--fold", type=int, default=0, help="Which 5-fold CV test split to extract.")
     parser.add_argument("--output_dir", default="outputs/latent_clustering")
     parser.add_argument("--k_values", default="3,4,5,6")
+    parser.add_argument("--selected_k", type=int, default=3)
     parser.add_argument("--metric_sample", type=int, default=5000)
     parser.add_argument("--tsne_sample", type=int, default=5000)
     parser.add_argument("--no_standardize", action="store_true")
@@ -381,13 +437,16 @@ def main():
         scaler = StandardScaler()
         cluster_features = scaler.fit_transform(features)
 
+    k_values = parse_k_values(args.k_values)
+    validate_selected_k(args.selected_k, k_values)
     best_k, labels, metrics_df = evaluate_kmeans(
         cluster_features,
         features,
         metadata,
         output_dir,
-        parse_k_values(args.k_values),
+        k_values,
         config.seed,
+        selected_k=args.selected_k,
         scaler=scaler,
         metric_sample=args.metric_sample,
     )

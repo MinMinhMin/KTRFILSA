@@ -1,2 +1,3 @@
-/dataset/**/*.csv
-/.worktrees/
+/dataset
+/docs
+ICTAI_2026_paper_423-1.pdf

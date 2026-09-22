@@ -34,6 +34,11 @@ from sklearn.metrics import (
     silhouette_score,
 )
 
+from extract_and_cluster import (
+    parse_k_values as parse_cluster_k_values,
+    validate_selected_k,
+)
+
 
 EXPERIMENT_1_RUNS = [
     ("original", "Original CL4KT", None),
@@ -84,6 +89,8 @@ def parse_args():
     parser.add_argument("--kmeans-seeds", type=int, default=10)
     parser.add_argument("--bootstrap-repeats", type=int, default=10)
     parser.add_argument("--order-shuffles", type=int, default=20)
+    parser.add_argument("--k-values", default="3,4,5,6")
+    parser.add_argument("--selected-k", type=int, default=3)
     parser.add_argument("--metric-sample", type=int, default=5000)
     parser.add_argument("--tsne-sample", type=int, default=5000)
     parser.add_argument("--batch-size", type=int, default=512)
@@ -220,6 +227,7 @@ def validate_inputs(args):
         root / "trajectory_analysis.py",
         root / "generate_experiment3_visuals.py",
         root / "order_shuffle_control.py",
+        root / "analyze_cluster_sensitivity.py",
         dataset_file(args),
     ]
     missing = [str(path) for path in required if not path.exists()]
@@ -298,7 +306,9 @@ def extraction_command(args, run_dir, seed, checkpoint):
         "--output_dir",
         str(run_dir / "latent_clustering"),
         "--k_values",
-        "3",
+        ",".join(str(k) for k in args.k_values),
+        "--selected_k",
+        str(args.selected_k),
         "--metric_sample",
         str(args.metric_sample),
         "--tsne_sample",
@@ -333,10 +343,14 @@ def ensure_model_run(pipeline, run_dir, seed, losses, stage_prefix):
         extraction_command(pipeline.args, run_dir, seed, checkpoint),
         [
             latent_dir / "latent_features.npz",
-            latent_dir / "cluster_assignments_k3.csv",
             latent_dir / "cluster_metrics.csv",
             latent_dir / "kmeans_model.pkl",
-        ],
+        ]
+        + [
+            latent_dir / f"cluster_assignments_k{k}.csv"
+            for k in pipeline.args.k_values
+        ]
+        + [latent_dir / f"kmeans_model_k{k}.pkl" for k in pipeline.args.k_values],
     )
     return checkpoint, latent_dir
 
@@ -397,30 +411,35 @@ def summarize_experiment_1(root, dataset, seed, metric_sample_size):
     pd.DataFrame(rows).to_csv(output / "representation_quality.csv", index=False)
 
 
-def analyze_k_sensitivity(latent_dir, output_path, seed, metric_sample_size):
-    features, _, _ = load_latent_space(latent_dir)
-    rows = []
-    for k in [3, 4, 5, 6]:
-        model = KMeans(n_clusters=k, random_state=seed, n_init=10)
-        labels = model.fit_predict(features)
-        sample_x, sample_y = metric_sample(
-            features, labels, seed=seed, sample_size=metric_sample_size
-        )
-        counts = np.bincount(labels, minlength=k)
-        proportions = counts / counts.sum()
-        rows.append(
-            {
-                "k": k,
-                "silhouette": silhouette_score(sample_x, sample_y),
-                "davies_bouldin": davies_bouldin_score(sample_x, sample_y),
-                "calinski_harabasz": calinski_harabasz_score(sample_x, sample_y),
-                "cluster_size_min_max_ratio": counts.min() / counts.max(),
-                "cluster_size_normalized_entropy": float(
-                    -(proportions * np.log(proportions + 1e-12)).sum() / np.log(k)
-                ),
-            }
-        )
-    pd.DataFrame(rows).to_csv(output_path, index=False)
+def analyze_k_sensitivity(latent_dir, output_path, seed=None, metric_sample_size=None):
+    """Write the legacy K-sensitivity alias from extractor metrics."""
+    metrics_path = Path(latent_dir) / "cluster_metrics.csv"
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"Missing extractor metrics: {metrics_path}")
+    metrics = pd.read_csv(metrics_path)
+    compatibility = metrics.rename(
+        columns={
+            "silhouette_score": "silhouette",
+            "davies_bouldin_index": "davies_bouldin",
+            "calinski_harabasz_score": "calinski_harabasz",
+        }
+    )
+    if "cluster_size_normalized_entropy" not in compatibility:
+        entropy_values = []
+        for _, row in compatibility.iterrows():
+            k = int(row["k"])
+            assignments = pd.read_csv(
+                Path(latent_dir) / f"cluster_assignments_k{k}.csv"
+            )
+            proportions = assignments["cluster"].value_counts(normalize=True)
+            entropy_values.append(
+                float(
+                    -(proportions * np.log(proportions + 1e-12)).sum()
+                    / np.log(k)
+                )
+            )
+        compatibility["cluster_size_normalized_entropy"] = entropy_values
+    compatibility.to_csv(output_path, index=False)
 
 
 def best_centroid_alignment(reference, candidate):
@@ -1172,8 +1191,15 @@ def write_run_config(root, args, seeds):
             "student_t_alpha": 1.0,
             "l2_normalize_training_states": True,
         },
-        "posthoc_k_values": [3, 4, 5, 6],
-        "selected_k": 3,
+        "posthoc_k_values": list(args.k_values),
+        "selected_k": int(args.selected_k),
+        "metric_best_k": None,
+        "sensitivity_outputs": [
+            "experiment_1/k_sensitivity/cluster_metrics.csv",
+            "experiment_1/k_sensitivity/interpretability_summary.csv",
+            "experiment_1/k_sensitivity/interpretability_feature_effects.csv",
+            "experiment_1/k_sensitivity/interpretability_sensitivity.md",
+        ],
         "order_shuffle_repetitions": args.order_shuffles,
         "order_shuffle_base_seed": seeds[0],
         "experiment_1_runs": [
@@ -1202,6 +1228,8 @@ def write_run_config(root, args, seeds):
             "metric_sample",
             "batch_size",
             "num_epochs",
+            "posthoc_k_values",
+            "selected_k",
         ]
         changed = [
             key for key in critical_keys if existing.get(key) != config.get(key)
@@ -1223,7 +1251,7 @@ def print_dry_run(args, seeds):
     print(f"- Output: {Path(args.output_dir).resolve()}")
     print(
         f"- Experiment 1: {len(EXPERIMENT_1_RUNS)} model trainings + "
-        "K sensitivity (K=3,4,5,6)"
+        f"K sensitivity (K={','.join(map(str, args.k_values))}), selected K={args.selected_k}"
     )
     print(
         f"- Experiment 2: {args.kmeans_seeds} KMeans seeds, "
@@ -1243,6 +1271,9 @@ def print_dry_run(args, seeds):
 
 def main():
     args = parse_args()
+    if isinstance(args.k_values, str):
+        args.k_values = parse_cluster_k_values(args.k_values)
+    validate_selected_k(args.selected_k, args.k_values)
     seeds = parse_seeds(args.model_seeds)
     if args.kmeans_seeds < 2:
         raise ValueError("--kmeans-seeds must be at least 2")
@@ -1284,8 +1315,59 @@ def main():
         analyze_k_sensitivity(
             experiment_1_latents["soft_kmeans"],
             k_sensitivity_path,
-            primary_seed,
-            args.metric_sample,
+        )
+    sensitivity_dir = pipeline.root / "experiment_1" / "k_sensitivity"
+    sensitivity_outputs = [
+        sensitivity_dir / "cluster_metrics.csv",
+        sensitivity_dir / "interpretability_summary.csv",
+        sensitivity_dir / "interpretability_feature_effects.csv",
+        sensitivity_dir / "interpretability_sensitivity.md",
+    ]
+    pipeline.run_command(
+        "experiment_1/k_sensitivity",
+        [
+            args.python,
+            "analyze_cluster_sensitivity.py",
+            "--preprocessed_csv",
+            str(dataset_file(args)),
+            "--clustering_dir",
+            str(experiment_1_latents["soft_kmeans"]),
+            "--config",
+            args.config,
+            "--output_dir",
+            str(sensitivity_dir),
+            "--k_values",
+            ",".join(str(k) for k in args.k_values),
+            "--selected_k",
+            str(args.selected_k),
+            "--metric_sample",
+            str(args.metric_sample),
+            "--seed",
+            str(primary_seed),
+            "--timestamp_unit",
+            "ordinal" if args.dataset.upper() == "ASSISTMENT2009" else "auto",
+        ],
+        sensitivity_outputs,
+    )
+    if all(path.exists() for path in sensitivity_outputs):
+        sensitivity_metrics = pd.read_csv(sensitivity_outputs[0])
+        metric_best_rows = sensitivity_metrics[
+            sensitivity_metrics["metric_best_k"]
+        ]
+        metric_best_k = int(metric_best_rows.iloc[0]["k"])
+        run_config_path = pipeline.root / "run_config.json"
+        run_config = json.loads(run_config_path.read_text(encoding="utf-8"))
+        run_config["metric_best_k"] = metric_best_k
+        run_config_path.write_text(
+            json.dumps(run_config, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        pipeline.mark(
+            "experiment_1/k_sensitivity",
+            "completed",
+            outputs=[str(path) for path in sensitivity_outputs],
+            metric_best_k=metric_best_k,
+            selected_k=args.selected_k,
         )
     pipeline.mark(
         "experiment_1/summary",

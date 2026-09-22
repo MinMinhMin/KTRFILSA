@@ -24,6 +24,8 @@ def parse_args():
     parser.add_argument("--kmeans-seeds", type=int, default=10)
     parser.add_argument("--bootstrap-repeats", type=int, default=10)
     parser.add_argument("--order-shuffles", type=int, default=20)
+    parser.add_argument("--k-values", default="3,4,5,6")
+    parser.add_argument("--selected-k", type=int, default=3)
     parser.add_argument("--metric-sample", type=int, default=5000)
     parser.add_argument("--tsne-sample", type=int, default=5000)
     parser.add_argument("--batch-size", type=int, default=512)
@@ -65,6 +67,10 @@ def main():
             str(args.bootstrap_repeats),
             "--order-shuffles",
             str(args.order_shuffles),
+            "--k-values",
+            args.k_values,
+            "--selected-k",
+            str(args.selected_k),
             "--metric-sample",
             str(args.metric_sample),
             "--tsne-sample",
