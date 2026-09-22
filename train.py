@@ -62,7 +62,27 @@ def export_model_state_dict(model, accelerator=None):
 
 
 def gather_metric_tensors(accelerator, predictions, truths):
-    """Gather variable-length validation/test predictions across DDP workers."""
+    """Gather variable-length validation/test predictions across DDP workers.
+
+    Filtering padding tokens makes each rank produce a different number of
+    predictions. ``Accelerator.gather_for_metrics`` does not pad arbitrary
+    tensors before its underlying ``all_gather`` in all supported versions,
+    so pad both tensors explicitly and remove the sentinel rows afterwards.
+    """
+    if getattr(accelerator, "num_processes", 1) == 1:
+        return predictions, truths
+
+    if hasattr(accelerator, "pad_across_processes"):
+        predictions = accelerator.pad_across_processes(
+            predictions, dim=0, pad_index=0.0
+        )
+        truths = accelerator.pad_across_processes(truths, dim=0, pad_index=-1.0)
+        predictions, truths = accelerator.gather((predictions, truths))
+        valid = truths > -1
+        return predictions[valid], truths[valid]
+
+    # Older Accelerate versions may not expose pad_across_processes. Keep the
+    # existing behavior as a compatibility fallback for those installations.
     if hasattr(accelerator, "gather_for_metrics"):
         return accelerator.gather_for_metrics((predictions, truths))
     return accelerator.gather(predictions), accelerator.gather(truths)
