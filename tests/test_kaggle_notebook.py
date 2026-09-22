@@ -22,3 +22,6 @@ def test_camera_ready_notebook_contains_required_secrets_mapping_and_upload():
     ]:
         assert token in source
     assert 'github_token = "' not in source
+    assert "DATASET_TARGET_ROOT.mkdir(parents=True, exist_ok=True)" in source
+    assert "resolve_dataset_source" in source
+    assert "shutil.copytree" in source
