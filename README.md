@@ -84,6 +84,20 @@ python run_all_datasets.py --dry-run
 
 The experiment runner is resumable. Existing completed stages are reused unless `--force` is supplied.
 
+For a Kaggle T4×2 runtime, the camera-ready notebook enables distributed
+training with one process per GPU. The training batch size is per GPU, so a
+safe starting point is 128:
+
+```bash
+python run_all_datasets.py \
+  --gpu 0,1 --device cuda:0 --ddp --ddp-gpus 2 \
+  --batch-size 128
+```
+
+DDP is used only for model training; extraction and the post-hoc analysis run
+once on `cuda:0`. Checkpoints and logs are written by rank 0, while validation
+and test predictions are gathered across workers.
+
 ## Outputs
 
 Each dataset produces separate directories for representation quality, stability, pedagogical analysis, and trajectory analysis. Outputs include CSV tables, trained checkpoints, cluster models, logs, and figures.

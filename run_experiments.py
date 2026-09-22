@@ -82,6 +82,23 @@ def parse_args():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--gpu", default="0")
     parser.add_argument(
+        "--ddp",
+        action="store_true",
+        help="Launch each training run with torchrun and DistributedDataParallel.",
+    )
+    parser.add_argument(
+        "--ddp-gpus",
+        type=int,
+        default=2,
+        help="Number of processes/visible GPUs used for DDP training.",
+    )
+    parser.add_argument(
+        "--ddp-master-port",
+        type=int,
+        default=29501,
+        help="Rendezvous port for torchrun DDP training.",
+    )
+    parser.add_argument(
         "--model-seeds",
         default="12405,12406,12407",
         help="At most three comma-separated model seeds.",
@@ -250,7 +267,7 @@ def checkpoint_path(run_dir, dataset):
 
 
 def training_command(args, run_dir, seed, losses):
-    command = [
+    training = [
         args.python,
         "main.py",
         "--config",
@@ -280,17 +297,30 @@ def training_command(args, run_dir, seed, losses):
         "--reg_cl",
         "0.1",
     ]
+    if args.ddp:
+        training.append("--ddp")
     if args.num_epochs is not None:
-        command.extend(["--num_epochs", str(args.num_epochs)])
+        training.extend(["--num_epochs", str(args.num_epochs)])
     if losses is not None:
-        command.extend(
+        training.extend(
             [
                 "--use_joint_training_module",
                 "--joint_training_losses",
                 losses,
             ]
         )
-    return command
+    if not args.ddp:
+        return training
+    return [
+        args.python,
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nproc_per_node",
+        str(args.ddp_gpus),
+        "--master_port",
+        str(args.ddp_master_port),
+    ] + training[1:]
 
 
 def extraction_command(args, run_dir, seed, checkpoint):
@@ -1169,6 +1199,9 @@ def write_run_config(root, args, seeds):
         "metric_sample": args.metric_sample,
         "device": args.device,
         "gpu": args.gpu,
+        "ddp": getattr(args, "ddp", False),
+        "ddp_gpus": getattr(args, "ddp_gpus", 1),
+        "ddp_master_port": getattr(args, "ddp_master_port", 29501),
         "batch_size": args.batch_size,
         "num_epochs": args.num_epochs,
         "training_defaults": {
@@ -1230,6 +1263,9 @@ def write_run_config(root, args, seeds):
             "num_epochs",
             "posthoc_k_values",
             "selected_k",
+            "ddp",
+            "ddp_gpus",
+            "ddp_master_port",
         ]
         changed = [
             key for key in critical_keys if existing.get(key) != config.get(key)
@@ -1281,6 +1317,10 @@ def main():
         raise ValueError("--bootstrap-repeats must be at least 1")
     if args.order_shuffles < 1:
         raise ValueError("--order-shuffles must be at least 1")
+    if args.ddp_gpus < 1:
+        raise ValueError("--ddp-gpus must be at least 1")
+    if args.ddp and "," not in str(args.gpu) and args.ddp_gpus > 1:
+        raise ValueError("DDP with multiple processes requires --gpu such as 0,1")
     validate_inputs(args)
     pipeline = Pipeline(args)
     write_run_config(pipeline.root, args, seeds)

@@ -117,8 +117,12 @@ class ClusterFriendlyModule(nn.Module):
             return
         if z.size(0) < self.num_clusters:
             return
-        indices = torch.randperm(z.size(0), device=z.device)[: self.num_clusters]
-        self.cluster_centers.copy_(z[indices])
+        distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
+        if not distributed or torch.distributed.get_rank() == 0:
+            indices = torch.randperm(z.size(0), device=z.device)[: self.num_clusters]
+            self.cluster_centers.copy_(z[indices])
+        if distributed:
+            torch.distributed.broadcast(self.cluster_centers, src=0)
         self.centers_initialized.fill_(True)
 
     def project_valid_states(self, sequence_features, attention_mask):

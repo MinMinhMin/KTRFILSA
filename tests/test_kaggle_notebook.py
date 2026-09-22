@@ -25,3 +25,11 @@ def test_camera_ready_notebook_contains_required_secrets_mapping_and_upload():
     assert "DATASET_TARGET_ROOT.mkdir(parents=True, exist_ok=True)" in source
     assert "resolve_dataset_source" in source
     assert "shutil.copytree" in source
+    for token in [
+        "USE_DDP",
+        "DDP_GPUS",
+        'GPU = "0,1"',
+        'DEVICE = "cuda:0"',
+        "--ddp-gpus",
+    ]:
+        assert token in source

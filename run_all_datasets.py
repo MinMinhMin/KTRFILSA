@@ -20,6 +20,9 @@ def parse_args():
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--gpu", default="0")
+    parser.add_argument("--ddp", action="store_true")
+    parser.add_argument("--ddp-gpus", type=int, default=2)
+    parser.add_argument("--ddp-master-port", type=int, default=29501)
     parser.add_argument("--model-seeds", default="12405,12406,12407")
     parser.add_argument("--kmeans-seeds", type=int, default=10)
     parser.add_argument("--bootstrap-repeats", type=int, default=10)
@@ -59,6 +62,10 @@ def main():
             args.device,
             "--gpu",
             args.gpu,
+            "--ddp-gpus",
+            str(args.ddp_gpus),
+            "--ddp-master-port",
+            str(args.ddp_master_port),
             "--model-seeds",
             args.model_seeds,
             "--kmeans-seeds",
@@ -80,6 +87,8 @@ def main():
         ]
         if args.num_epochs is not None:
             command.extend(["--num-epochs", str(args.num_epochs)])
+        if args.ddp:
+            command.append("--ddp")
         if args.force:
             command.append("--force")
         if args.dry_run:

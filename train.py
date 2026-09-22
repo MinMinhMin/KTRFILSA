@@ -8,13 +8,24 @@ from datetime import datetime, timedelta
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score, accuracy_score, mean_squared_error
 
-def export_model_state_dict(model):
+def export_model_state_dict(model, accelerator=None):
+    if accelerator is not None:
+        model = accelerator.unwrap_model(model)
+    elif hasattr(model, "module"):
+        model = model.module
     state_dict = model.state_dict()
     return {
-        key: value
+        key: value.detach().cpu()
         for key, value in state_dict.items()
         if "cluster_friendly_module" not in key
     }
+
+
+def gather_metric_tensors(accelerator, predictions, truths):
+    """Gather variable-length validation/test predictions across DDP workers."""
+    if hasattr(accelerator, "gather_for_metrics"):
+        return accelerator.gather_for_metrics((predictions, truths))
+    return accelerator.gather(predictions), accelerator.gather(truths)
 
 
 def model_train(
@@ -31,7 +42,8 @@ def model_train(
 ):
     train_losses = []
     avg_train_losses = []
-    best_valid_auc = 0
+    best_valid_auc = -np.inf
+    best_epoch = 0
 
     logs_df = pd.DataFrame()
     num_epochs = config["train_config"]["num_epochs"]
@@ -51,10 +63,8 @@ def model_train(
             model.train()
             out_dict = model(batch)
 
-            if n_gpu > 1:
-                loss, token_cnt, label_sum = model.module.loss(batch, out_dict)
-            else:
-                loss, token_cnt, label_sum = model.loss(batch, out_dict)
+            base_model = accelerator.unwrap_model(model)
+            loss, token_cnt, label_sum = base_model.loss(batch, out_dict)
 
             accelerator.backward(loss)
 
@@ -88,8 +98,11 @@ def model_train(
                 total_preds.append(pred)
                 total_trues.append(true)
 
-            total_preds = torch.cat(total_preds).squeeze(-1).detach().cpu().numpy()
-            total_trues = torch.cat(total_trues).squeeze(-1).detach().cpu().numpy()
+            total_preds, total_trues = gather_metric_tensors(
+                accelerator, torch.cat(total_preds), torch.cat(total_trues)
+            )
+            total_preds = total_preds.squeeze(-1).detach().cpu().numpy()
+            total_trues = total_trues.squeeze(-1).detach().cpu().numpy()
 
         train_loss = np.average(train_losses)
         avg_train_losses.append(train_loss)
@@ -98,20 +111,20 @@ def model_train(
 
         checkpoint_root = config.get("checkpoint_dir", "saved_model")
         path = os.path.join(checkpoint_root, model_name, data_name)
-        if not os.path.isdir(path):
-            os.makedirs(path)
+        os.makedirs(path, exist_ok=True)
 
         if valid_auc > best_valid_auc:
-
-            path = os.path.join(checkpoint_root, model_name, data_name, "params_*")
-            for _path in glob.glob(path):
-                os.remove(_path)
             best_valid_auc = valid_auc
             best_epoch = i
-            torch.save(
-                {"epoch": i, "model_state_dict": export_model_state_dict(model),},
-                os.path.join(checkpoint_root, model_name, data_name, "params_{}".format(str(best_epoch))),
-            )
+            if accelerator.is_main_process:
+                path = os.path.join(checkpoint_root, model_name, data_name, "params_*")
+                for _path in glob.glob(path):
+                    os.remove(_path)
+                torch.save(
+                    {"epoch": i, "model_state_dict": export_model_state_dict(model, accelerator)},
+                    os.path.join(checkpoint_root, model_name, data_name, "params_{}".format(str(best_epoch))),
+                )
+        accelerator.wait_for_everyone()
         if i - best_epoch > 10:
             break
 
@@ -138,21 +151,28 @@ def model_train(
                 total_preds.append(pred)
                 total_trues.append(true)
 
-            total_preds = torch.cat(total_preds).squeeze(-1).detach().cpu().numpy()
-            total_trues = torch.cat(total_trues).squeeze(-1).detach().cpu().numpy()
+            total_preds, total_trues = gather_metric_tensors(
+                accelerator, torch.cat(total_preds), torch.cat(total_trues)
+            )
+            total_preds = total_preds.squeeze(-1).detach().cpu().numpy()
+            total_trues = total_trues.squeeze(-1).detach().cpu().numpy()
 
         test_auc = roc_auc_score(y_true=total_trues, y_score=total_preds)
 
-        print(
-            "Fold {}:\t Epoch {}\t\tTRAIN LOSS: {:.5f}\tVALID AUC: {:.5f}\tTEST AUC: {:.5f}".format(
-                fold, i, train_loss, valid_auc, test_auc
+        if accelerator.is_main_process:
+            print(
+                "Fold {}:\t Epoch {}\t\tTRAIN LOSS: {:.5f}\tVALID AUC: {:.5f}\tTEST AUC: {:.5f}".format(
+                    fold, i, train_loss, valid_auc, test_auc
+                )
             )
-        )
+    accelerator.wait_for_everyone()
     checkpoint = torch.load(
         os.path.join(checkpoint_root, model_name, data_name, "params_{}".format(str(best_epoch)))
     )
 
-    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    accelerator.unwrap_model(model).load_state_dict(
+        checkpoint["model_state_dict"], strict=False
+    )
 
     total_preds, total_trues = [], []
     total_q_embeds, total_qr_embeds = [], []
@@ -172,18 +192,22 @@ def model_train(
             total_preds.append(pred)
             total_trues.append(true)
 
-        total_preds = torch.cat(total_preds).squeeze(-1).detach().cpu().numpy()
-        total_trues = torch.cat(total_trues).squeeze(-1).detach().cpu().numpy()
+        total_preds, total_trues = gather_metric_tensors(
+            accelerator, torch.cat(total_preds), torch.cat(total_trues)
+        )
+        total_preds = total_preds.squeeze(-1).detach().cpu().numpy()
+        total_trues = total_trues.squeeze(-1).detach().cpu().numpy()
 
     auc = roc_auc_score(y_true=total_trues, y_score=total_preds)
     acc = accuracy_score(y_true=total_trues >= 0.5, y_pred=total_preds >= 0.5)
     rmse = np.sqrt(mean_squared_error(y_true=total_trues, y_pred=total_preds))
 
-    print(
-        "Best Model\tTEST AUC: {:.5f}\tTEST ACC: {:5f}\tTEST RMSE: {:5f}".format(
-            auc, acc, rmse
+    if accelerator.is_main_process:
+        print(
+            "Best Model\tTEST AUC: {:.5f}\tTEST ACC: {:5f}\tTEST RMSE: {:5f}".format(
+                auc, acc, rmse
+            )
         )
-    )
 
     logs_df = pd.concat(
         [
@@ -200,10 +224,11 @@ def model_train(
         ignore_index=True,
     )
 
-    log_out_path = os.path.join(log_path, data_name)
-    os.makedirs(log_out_path, exist_ok=True)
-    logs_df.to_csv(
-        os.path.join(log_out_path, "{}_{}.csv".format(model_name, now)), index=False
-    )
+    if accelerator.is_main_process:
+        log_out_path = os.path.join(log_path, data_name)
+        os.makedirs(log_out_path, exist_ok=True)
+        logs_df.to_csv(
+            os.path.join(log_out_path, "{}_{}.csv".format(model_name, now)), index=False
+        )
 
     return auc, acc, rmse

@@ -20,12 +20,18 @@ from utils.config import ConfigNode as CN
 from utils.file_io import PathManager
 
 
-def main(config, gpu=None):
+def main(config, gpu=None, ddp=False):
     if gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
     accelerator = Accelerator()
     device = accelerator.device
+    distributed = accelerator.num_processes > 1
+    if ddp and not distributed:
+        raise RuntimeError(
+            "--ddp requires a torchrun/accelerate distributed launch; "
+            "no distributed workers were detected."
+        )
 
     model_name = config.model_name
     dataset_path = config.dataset_path
@@ -44,16 +50,13 @@ def main(config, gpu=None):
     train_config = config.train_config
     checkpoint_dir = config.checkpoint_dir
 
-    if not os.path.isdir(checkpoint_dir):
-        os.mkdir(checkpoint_dir)
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
     ckpt_path = os.path.join(checkpoint_dir, model_name)
-    if not os.path.isdir(ckpt_path):
-        os.mkdir(ckpt_path)
+    os.makedirs(ckpt_path, exist_ok=True)
 
     ckpt_path = os.path.join(ckpt_path, data_name)
-    if not os.path.isdir(ckpt_path):
-        os.mkdir(ckpt_path)
+    os.makedirs(ckpt_path, exist_ok=True)
 
     batch_size = train_config.batch_size
     eval_batch_size = train_config.eval_batch_size
@@ -164,7 +167,7 @@ def main(config, gpu=None):
             raise ValueError("This paper package supports only the CL4KT backbone")
 
         n_gpu = torch.cuda.device_count()
-        if n_gpu > 1:
+        if not distributed and n_gpu > 1:
             model = torch.nn.DataParallel(model).to(device)
         else:
             model = model.to(device)
@@ -201,16 +204,18 @@ def main(config, gpu=None):
 
     now = (datetime.now() + timedelta(hours=9)).strftime("%Y%m%d-%H%M%S")  # KST time
 
-    log_dir_name = "official-split" if official_split else "5-fold-cv"
-    log_out_path = os.path.join(os.path.join("logs", log_dir_name, "{}".format(data_name)))
-    os.makedirs(log_out_path, exist_ok=True)
-    with open(os.path.join(log_out_path, "{}-{}".format(model_name, now)), "w") as f:
-        f.write("AUC\tACC\tRMSE\n")
-        f.write("{:.5f}\t{:.5f}\t{:.5f}".format(test_auc, test_acc, test_rmse))
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        log_dir_name = "official-split" if official_split else "5-fold-cv"
+        log_out_path = os.path.join(os.path.join("logs", log_dir_name, "{}".format(data_name)))
+        os.makedirs(log_out_path, exist_ok=True)
+        with open(os.path.join(log_out_path, "{}-{}".format(model_name, now)), "w") as f:
+            f.write("AUC\tACC\tRMSE\n")
+            f.write("{:.5f}\t{:.5f}\t{:.5f}".format(test_auc, test_acc, test_rmse))
 
-    print("\nOfficial Split Result" if official_split else "\n5-fold CV Result")
-    print("AUC\tACC\tRMSE")
-    print("{:.5f}\t{:.5f}\t{:.5f}".format(test_auc, test_acc, test_rmse))
+        print("\nOfficial Split Result" if official_split else "\n5-fold CV Result")
+        print("AUC\tACC\tRMSE")
+        print("{:.5f}\t{:.5f}\t{:.5f}".format(test_auc, test_acc, test_rmse))
 
 
 if __name__ == "__main__":
@@ -267,6 +272,11 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="GPU id or ids to make visible for training, e.g. 0 or 1",
+    )
+    parser.add_argument(
+        "--ddp",
+        action="store_true",
+        help="Expect a torchrun launch and use Accelerator's DDP preparation.",
     )
     parser.add_argument(
         "--seed",
@@ -346,4 +356,4 @@ if __name__ == "__main__":
     cfg.freeze()
 
     print(cfg)
-    main(cfg, args.gpu)
+    main(cfg, args.gpu, args.ddp)
