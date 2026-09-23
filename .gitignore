@@ -3,3 +3,7 @@
 ICTAI_2026_paper_423-1.pdf
 tests/__pycache__
 /camera_ready_outputs
+/paper_results
+/paper_results_k_sensitivity_by_seed
+/interpretability_output
+interpretability_output.zip

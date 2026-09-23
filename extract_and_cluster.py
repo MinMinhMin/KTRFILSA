@@ -388,6 +388,7 @@ def main():
     parser.add_argument("--selected_k", type=int, default=3)
     parser.add_argument("--metric_sample", type=int, default=5000)
     parser.add_argument("--tsne_sample", type=int, default=5000)
+    parser.add_argument("--skip_tsne", action="store_true", help="Skip the optional t-SNE visualization; clustering metrics and assignments are unchanged.")
     parser.add_argument("--no_standardize", action="store_true")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=None, help="Override config seed.")
@@ -450,7 +451,9 @@ def main():
         scaler=scaler,
         metric_sample=args.metric_sample,
     )
-    plot_path = visualize_tsne(cluster_features, labels, metadata, output_dir, config.seed, args.tsne_sample)
+    plot_path = None if args.skip_tsne else visualize_tsne(
+        cluster_features, labels, metadata, output_dir, config.seed, args.tsne_sample
+    )
 
     print(f"Checkpoint: {checkpoint}")
     print(f"Saved outputs to: {output_dir}")

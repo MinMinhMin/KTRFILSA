@@ -1,0 +1,85 @@
+# Conservative H200 profile for the Camera-Ready correction campaign.
+# This file is independent from configs/paper.yaml and
+# configs/camera_ready_correction.yaml.
+#
+# The training batch is increased from 512 to 768 (a 3*256 tensor-core
+# friendly size) while the optimizer, learning rate, epochs, losses, seeds,
+# K values, and evaluation samples remain unchanged.  Use this profile as a
+# separate robustness run; do not overwrite the baseline campaign outputs.
+
+dataset_path: "./dataset"
+
+checkpoint_dir: .ckpts
+seed: 12405
+
+cl4kt_config:
+  hidden_size: 64
+  num_blocks: 2
+  num_attn_heads: 8
+  kq_same: True
+  final_fc_dim: 512
+  d_ff: 1024
+  l2: 0.0
+  dropout: 0.2
+  reg_cl: 0.1
+  mask_prob: 0.2
+  crop_prob: 0.3
+  permute_prob: 0.3
+  replace_prob: 0.3
+  negative_prob: 1.0
+  temp: 0.05
+  hard_negative_weight: 1.0
+
+train_config:
+  log_wandb_fold: True
+  sequence_option: "recent"
+  seq_len: 100
+  batch_size: 768
+  eval_batch_size: 2048
+  num_epochs: 300
+  print_epochs: 1
+  max_grad_norm: 2.0
+  learning_rate: 0.001
+  optimizer: adam
+  loss: BCE
+  save_model: False
+  save_epochs: 1
+  save_model_name: "tmp"
+  log_path: "logs"
+
+camera_ready_correction:
+  output_root: "camera_ready_outputs_h200_batch768"
+  datasets:
+    - ASSISTMENT2009
+    - ASSISTMENT2017
+    - XES3G5M
+  model_seeds: [12405, 12406, 12407]
+  k_values: [3, 4, 5, 6]
+  selected_k: 3
+  metric_sample: 5000
+  tsne_sample: 5000
+  skip_tsne: false
+  batch_size: 768
+  eval_batch_size: 2048
+  num_epochs: 300
+  device: "cuda"
+  gpu: "0"
+  ddp: false
+  ddp_gpus: 2
+  ddp_master_port: 29501
+  cpu_threads: 4
+  cpu_affinity: "0-3"
+  kmeans_seeds: 10
+  bootstrap_repeats: 10
+  order_shuffles: 20
+  configurations:
+    - slug: original
+      losses: null
+    - slug: soft
+      losses: "soft"
+    - slug: soft_kmeans
+      losses: "soft,kmeans"
+    - slug: soft_separation_temporal
+      losses: "soft,separation,temporal"
+    - slug: full
+      losses: "soft,kmeans,separation,temporal"
