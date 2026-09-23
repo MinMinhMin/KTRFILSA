@@ -126,9 +126,52 @@ to later course performance, dropout, or independent instructor judgment.
 
 ## Kaggle camera-ready workflow
 
-The notebook `notebooks/camera_ready_kaggle_hf.ipynb` is ready for Kaggle.
-Set `REPO_OWNER`, `REPO_NAME`, and `REPO_BRANCH` in its first code cell. It
-reads the GitHub token from the Kaggle secret `GITHUB_TOKEN`, maps:
+The seven resumable notebooks should be run in this order:
+
+```text
+01_assistment2009_primary.ipynb
+02_assistment2009_finish.ipynb
+03_assistment2017_primary.ipynb
+04_assistment2017_finish.ipynb
+05_xes3g5m_primary.ipynb
+06_xes3g5m_finish.ipynb
+07_final_package_upload.ipynb
+```
+
+Each notebook restores the previous `state/` tree from the Hugging Face model
+repository `MinMinMinMin/KL`, runs one resumable phase, and uploads successful
+jobs back to `state/`. The primary notebooks run the five Experiment 1
+configurations with seed `12405`; the finish notebooks run seeds `12406` and
+`12407` for Soft+KMeans and then run the analysis stages. The final notebook
+validates all three datasets and uploads the ZIP under `final/`.
+
+The phase runner used by these notebooks is `run_phase.py`. A primary job can
+be resumed without retraining completed outputs, for example:
+
+```bash
+python run_phase.py \
+  --dataset XES3G5M \
+  --phase primary \
+  --run-slug soft_kmeans \
+  --output-dir camera_ready_outputs \
+  --gpu 0,1 --device cuda:0 --ddp --ddp-gpus 2 \
+  --model-seeds 12405,12406,12407 \
+  --k-values 3,4,5,6 --selected-k 3 --batch-size 128
+```
+
+The standard Kaggle settings are `GPU="0,1"`, `DEVICE="cuda:0"`,
+`DDP_GPUS=2`, `BATCH_SIZE=128`, and
+`MODEL_SEEDS="12405,12406,12407"`. Set `REPO_OWNER`, `REPO_NAME`, and
+`REPO_BRANCH` in the notebook parameter cell. The notebooks read the GitHub
+token from the Kaggle secret `GITHUB_TOKEN`, read the Hugging Face token from
+`HF_TOKEN`, and use the equivalent notebook settings:
+
+```python
+BATCH_SIZE = 128
+MODEL_SEEDS = "12405,12406,12407"
+```
+
+They map:
 
 ```text
 /kaggle/input/datasets/minhvu111/dataset-kl/ASSISTMENT2009 -> dataset/ASSISTMENT2009
@@ -136,9 +179,11 @@ reads the GitHub token from the Kaggle secret `GITHUB_TOKEN`, maps:
 /kaggle/input/datasets/minhvu111/dataset-kl/XES3G5M0       -> dataset/XES3G5M
 ```
 
-It runs the full K=3,4,5,6 pipeline, packages the complete output and report
-files, then reads `HF_TOKEN` from Kaggle Secrets and uploads the zip to
-`MinMinMinMin/KL` with `HF_REPO_TYPE = "model"`. No token is stored in the
+The legacy notebook `notebooks/camera_ready_kaggle_hf.ipynb` remains available
+for a single-session full run. The seven phase notebooks are recommended when
+the Kaggle session limit requires interruption and resume. Intermediate
+outputs are uploaded with `upload_folder` under `state/`; the final package is
+uploaded with `upload_file` under `final/`. No token is stored in the
 repository or the uploaded archive.
 
 Third-party code and attributions are listed in `THIRD_PARTY.txt`.

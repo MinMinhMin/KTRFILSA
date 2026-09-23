@@ -1,4 +1,5 @@
 import torch
+from pytest import approx
 
 from train import gather_metric_tensors
 
@@ -36,5 +37,5 @@ def test_gather_metric_tensors_pads_uneven_ranks_and_removes_padding():
     )
 
     assert accelerator.pad_calls == [(0, 0.0, 2), (0, -1.0, 2)]
-    assert predictions.tolist() == [0.2, 0.8, 0.3, 0.7, 0.9]
-    assert truths.tolist() == [0.0, 1.0, 1.0, 0.0, 1.0]
+    assert predictions.tolist() == approx([0.2, 0.8, 0.3, 0.7, 0.9])
+    assert truths.tolist() == approx([0.0, 1.0, 1.0, 0.0, 1.0])
