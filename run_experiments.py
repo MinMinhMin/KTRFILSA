@@ -287,15 +287,15 @@ def training_command(args, run_dir, seed, losses):
         "--batch_size",
         str(args.batch_size),
         "--mask_prob",
-        "0.5",
+        str(getattr(args, "mask_prob", 0.5)),
         "--crop_prob",
-        "0.3",
+        str(getattr(args, "crop_prob", 0.3)),
         "--permute_prob",
-        "0.5",
+        str(getattr(args, "permute_prob", 0.5)),
         "--replace_prob",
-        "0.5",
+        str(getattr(args, "replace_prob", 0.5)),
         "--reg_cl",
-        "0.1",
+        str(getattr(args, "reg_cl", 0.1)),
     ]
     if args.ddp:
         training.append("--ddp")

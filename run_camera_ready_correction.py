@@ -175,6 +175,11 @@ def _runtime_args(settings, dataset):
         selected_k=int(settings["selected_k"]),
         metric_sample=int(settings["metric_sample"]),
         tsne_sample=int(settings["tsne_sample"]),
+        mask_prob=float(settings.get("mask_prob", 0.5)),
+        crop_prob=float(settings.get("crop_prob", 0.3)),
+        permute_prob=float(settings.get("permute_prob", 0.5)),
+        replace_prob=float(settings.get("replace_prob", 0.5)),
+        reg_cl=float(settings.get("reg_cl", 0.1)),
     )
 
 
